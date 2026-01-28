@@ -11,6 +11,8 @@
 ####     fi
 #### }
 
+#!/bin/bash
+
 CACHE_DIR="$HOME/.cache/rsync"
 mkdir -p "$CACHE_DIR"
 
@@ -33,7 +35,7 @@ BOLD='\033[1m'
 
 [ -f "$CACHE_FILE" ] && source "$CACHE_FILE"
 
-echo -e "\n${GREY}Tip: Type '#!' to edit the previous value${NC}\n"
+echo -e "${GREY}Tip: Type '#!' to edit the previous value${NC}\n"
 
 while true; do
     read -p "Username [$LAST_USER]: " USER
@@ -71,6 +73,33 @@ while true; do
     break
 done
 
+if [ "$MODE" = "up" ]; then
+    while true; do
+        read -p "Local path [$LAST_LOCAL]: " LOCAL_PATH
+        LOCAL_PATH=$(echo "$LOCAL_PATH" | tr -d '\n\r' | xargs)
+        
+        if [[ "$LOCAL_PATH" == "#!" ]]; then
+            read -e -i "$LAST_LOCAL" -p "Local path: " LOCAL_PATH
+            LOCAL_PATH=$(echo "$LOCAL_PATH" | tr -d '\n\r' | xargs)
+        fi
+        LOCAL_PATH=${LOCAL_PATH:-$LAST_LOCAL}
+        break
+    done
+    
+    LOCAL_PATH="${LOCAL_PATH/#\~/$HOME}"
+    
+    if [[ ! "$LOCAL_PATH" = /* ]]; then
+        LOCAL_PATH="$(pwd)/$LOCAL_PATH"
+    fi
+    
+    if [[ ! -d "$LOCAL_PATH" ]]; then
+        echo -e "\n${RED}Error: Local path does not exist: $LOCAL_PATH${NC}"
+        exit 1
+    fi
+else
+    LOCAL_PATH="$USER"
+fi
+
 if [[ -z "$USER" || -z "$HOST" || -z "$REMOTE_PATH" ]]; then
     echo -e "\n${RED}Error: All fields are required${NC}"
     exit 1
@@ -80,12 +109,25 @@ cat > "$CACHE_FILE" << EOF
 LAST_USER="$USER"
 LAST_HOST="$HOST"
 LAST_PATH="$REMOTE_PATH"
+LAST_LOCAL="$LOCAL_PATH"
 EOF
 
-LOCAL_PATH="$USER"
-mkdir -p "$LOCAL_PATH"
+if [ "$MODE" = "down" ]; then
+    mkdir -p "$LOCAL_PATH"
+fi
 
 LOG_FILE=$(mktemp)
+
+echo -e "\n${YELLOW}Preflight: Testing for SSH keys${NC}"
+
+ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "${USER}@${HOST}" "exit" 2>/dev/null
+SSH_KEY_TEST=$?
+
+if [ $SSH_KEY_TEST -eq 0 ]; then
+    echo -e "${GREEN}✓ Successfully matched SSH key${NC}"
+else
+    echo -e "${RED}✗ Failed to match SSH key for ${BLUE}${HOST}${NC}${RED} - Using password${NC}"
+fi
 
 if [ "$MODE" = "down" ]; then
     SRC="${USER}@${HOST}:${REMOTE_PATH}/"
@@ -97,8 +139,8 @@ else
     DIRECTION="${GREEN}${LOCAL_PATH}${NC} ${YELLOW}→${NC} ${BLUE}${USER}@${HOST}:${REMOTE_PATH}${NC}"
 fi
 
-echo -e "\n${BOLD}Starting transfer...${NC}"
-echo -e "$DIRECTION\n"
+echo -e "${BOLD}Starting transfer...${NC}"
+echo -e "$DIRECTION"
 
 rsync -avz --info=progress2 --no-inc-recursive --stats "$SRC" "$DEST" > "$LOG_FILE" 2>&1 &
 RSYNC_PID=$!
@@ -107,14 +149,32 @@ tput civis
 trap "tput cnorm; rm -f $LOG_FILE; exit" INT TERM EXIT
 
 while kill -0 $RSYNC_PID 2>/dev/null; do
-    PROGRESS_LINE=$(tail -n 2 "$LOG_FILE" | grep "%" | tail -n 1)
+    PROGRESS_LINE=$(tail -n 3 "$LOG_FILE" 2>/dev/null | grep -E '[0-9]+%' | tail -n 1)
 
-    if [[ "$PROGRESS_LINE" =~ ([0-9]+)% ]]; then
-        PERCENT="${BASH_REMATCH[1]}"
+    if [[ "$PROGRESS_LINE" =~ [^0-9]*([0-9,]+)[^0-9]+([0-9]+)% ]]; then
+        CURRENT_BYTES=$(echo "${BASH_REMATCH[1]}" | tr -d ',')
+        PERCENT="${BASH_REMATCH[2]}"
+
+        if [ "$PERCENT" -gt 0 ]; then
+            TOTAL_BYTES=$((CURRENT_BYTES * 100 / PERCENT))
+        else
+            TOTAL_BYTES=$CURRENT_BYTES
+        fi
+
+        CURRENT_SIZE=$(awk -v bytes="$CURRENT_BYTES" 'BEGIN {
+            if (bytes < 1048576) printf "%.0fKB", bytes/1024;
+            else printf "%.0fMB", bytes/1048576;
+        }')
+
+        TOTAL_SIZE=$(awk -v bytes="$TOTAL_BYTES" 'BEGIN {
+            if (bytes < 1048576) printf "%.0fKB", bytes/1024;
+            else printf "%.0fMB", bytes/1048576;
+        }')
 
         COLS=$(tput cols)
-        BAR_WIDTH=$((COLS - 20))
-        [ $BAR_WIDTH -lt 10 ] && BAR_WIDTH=10
+        INFO_WIDTH=35
+        BAR_WIDTH=$((COLS - INFO_WIDTH))
+        [ $BAR_WIDTH -lt 20 ] && BAR_WIDTH=20
 
         FILLED=$((PERCENT * BAR_WIDTH / 100))
         EMPTY=$((BAR_WIDTH - FILLED))
@@ -125,7 +185,7 @@ while kill -0 $RSYNC_PID 2>/dev/null; do
         COLOR="$BLUE"
         [ "$PERCENT" -eq 100 ] && COLOR="$GREEN"
 
-        printf "\r${COLOR}[%s%s] %3d%%${NC}" "$BAR_STR" "$PAD_STR" "$PERCENT"
+        printf "\r${COLOR}[%s%s]${NC} %3d%% [${BLUE}%s${NC}/${GREEN}%s${NC}]" "$BAR_STR" "$PAD_STR" "$PERCENT" "$CURRENT_SIZE" "$TOTAL_SIZE"
     fi
     sleep 0.1
 done
