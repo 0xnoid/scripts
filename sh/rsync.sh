@@ -10,9 +10,6 @@
 ####         command rsync "$@"
 ####     fi
 #### }
-
-#!/bin/bash
-
 CACHE_DIR="$HOME/.cache/rsync"
 mkdir -p "$CACHE_DIR"
 
