@@ -21,27 +21,58 @@ if [[ "$MODE" != "up" && "$MODE" != "down" ]]; then
 fi
 
 CACHE_FILE="$CACHE_DIR/${MODE}_last"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+GREY='\033[0;90m'
 NC='\033[0m'
 BOLD='\033[1m'
 
 [ -f "$CACHE_FILE" ] && source "$CACHE_FILE"
 
-read -p "Username [$LAST_USER]: " USER
-USER=${USER:-$LAST_USER}
+echo -e "\n${GREY}Tip: Type '#!' to edit the previous value${NC}\n"
 
-read -p "Host [$LAST_HOST]: " HOST
-HOST=${HOST:-$LAST_HOST}
+while true; do
+    read -p "Username [$LAST_USER]: " USER
+    USER=$(echo "$USER" | tr -d '\n\r' | xargs)
+    
+    if [[ "$USER" == "#!" ]]; then
+        read -e -i "$LAST_USER" -p "Username: " USER
+        USER=$(echo "$USER" | tr -d '\n\r' | xargs)
+    fi
+    USER=${USER:-$LAST_USER}
+    break
+done
 
-read -p "Remote path [$LAST_PATH]: " REMOTE_PATH
-REMOTE_PATH=${REMOTE_PATH:-$LAST_PATH}
+while true; do
+    read -p "Host [$LAST_HOST]: " HOST
+    HOST=$(echo "$HOST" | tr -d '\n\r' | xargs)
+    
+    if [[ "$HOST" == "#!" ]]; then
+        read -e -i "$LAST_HOST" -p "Host: " HOST
+        HOST=$(echo "$HOST" | tr -d '\n\r' | xargs)
+    fi
+    HOST=${HOST:-$LAST_HOST}
+    break
+done
+
+while true; do
+    read -p "Remote path [$LAST_PATH]: " REMOTE_PATH
+    REMOTE_PATH=$(echo "$REMOTE_PATH" | tr -d '\n\r' | xargs)
+    
+    if [[ "$REMOTE_PATH" == "#!" ]]; then
+        read -e -i "$LAST_PATH" -p "Remote path: " REMOTE_PATH
+        REMOTE_PATH=$(echo "$REMOTE_PATH" | tr -d '\n\r' | xargs)
+    fi
+    REMOTE_PATH=${REMOTE_PATH:-$LAST_PATH}
+    break
+done
 
 if [[ -z "$USER" || -z "$HOST" || -z "$REMOTE_PATH" ]]; then
-    echo -e "${RED}Error: All fields are required${NC}"
+    echo -e "\n${RED}Error: All fields are required${NC}"
     exit 1
 fi
 
@@ -53,40 +84,47 @@ EOF
 
 LOCAL_PATH="$USER"
 mkdir -p "$LOCAL_PATH"
+
 LOG_FILE=$(mktemp)
 
 if [ "$MODE" = "down" ]; then
-    SRC="${USER}@${HOST}:${REMOTE_PATH}/" 
+    SRC="${USER}@${HOST}:${REMOTE_PATH}/"
     DEST="${LOCAL_PATH}/"
     DIRECTION="${BLUE}${REMOTE_PATH}${NC} ${YELLOW}→${NC} ${GREEN}${LOCAL_PATH}${NC}"
 else
     SRC="${LOCAL_PATH}/"
     DEST="${USER}@${HOST}:${REMOTE_PATH}/"
-    DIRECTION="${GREEN}${LOCAL_PATH}${NC} ${YELLOW}→${NC} ${BLUE}${REMOTE_PATH}${NC}"
+    DIRECTION="${GREEN}${LOCAL_PATH}${NC} ${YELLOW}→${NC} ${BLUE}${USER}@${HOST}:${REMOTE_PATH}${NC}"
 fi
 
 echo -e "\n${BOLD}Starting transfer...${NC}"
 echo -e "$DIRECTION\n"
+
 rsync -avz --info=progress2 --no-inc-recursive --stats "$SRC" "$DEST" > "$LOG_FILE" 2>&1 &
 RSYNC_PID=$!
+
 tput civis
 trap "tput cnorm; rm -f $LOG_FILE; exit" INT TERM EXIT
 
 while kill -0 $RSYNC_PID 2>/dev/null; do
     PROGRESS_LINE=$(tail -n 2 "$LOG_FILE" | grep "%" | tail -n 1)
-    
+
     if [[ "$PROGRESS_LINE" =~ ([0-9]+)% ]]; then
         PERCENT="${BASH_REMATCH[1]}"
+
         COLS=$(tput cols)
         BAR_WIDTH=$((COLS - 20))
         [ $BAR_WIDTH -lt 10 ] && BAR_WIDTH=10
+
         FILLED=$((PERCENT * BAR_WIDTH / 100))
         EMPTY=$((BAR_WIDTH - FILLED))
+
         BAR_STR=$(printf "%0.s█" $(seq 1 $FILLED))
         PAD_STR=$(printf "%0.s░" $(seq 1 $EMPTY))
+
         COLOR="$BLUE"
         [ "$PERCENT" -eq 100 ] && COLOR="$GREEN"
-        
+
         printf "\r${COLOR}[%s%s] %3d%%${NC}" "$BAR_STR" "$PAD_STR" "$PERCENT"
     fi
     sleep 0.1
@@ -101,10 +139,11 @@ OUTPUT=$(cat "$LOG_FILE")
 if [ $RSYNC_EXIT -eq 0 ]; then
     FILE_COUNT=$(echo "$OUTPUT" | grep "Number of regular files transferred:" | awk '{print $6}' | tr -d ',')
     TOTAL_BYTES=$(echo "$OUTPUT" | grep "Total transferred file size:" | awk '{print $5}' | tr -d ',')
+
     READABLE_SIZE=$(awk -v bytes="$TOTAL_BYTES" 'BEGIN {
         if (bytes < 1024) printf "%d B", bytes;
-        else if (bytes < 5242880) printf "%.2f KB", bytes/1024;  # Less than 5MB show KB
-        else printf "%.2f MB", bytes/1048576;                     # Else show MB
+        else if (bytes < 5242880) printf "%.2f KB", bytes/1024;
+        else printf "%.2f MB", bytes/1048576;
     }')
 
     echo -e "\n${GREEN}${BOLD}Transfer Success:${NC}"
